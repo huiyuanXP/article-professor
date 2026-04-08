@@ -265,22 +265,22 @@ class RagRetriever(QObject):
         """检查向量库是否已加载完成"""
         return bool(self.paper_vector_paths)
 
-    def retrieve_with_context(self, query: str, paper_id: str, top_k: int = 5) -> Tuple[str, Dict]:
+    def retrieve_with_context(self, query: str, paper_id: str, top_k: int = 5) -> Tuple[str, List[Dict]]:
         """
         从指定论文的向量库中检索相关内容并保留其在原文中的结构
-        
+
         Args:
             query: 查询文本
             paper_id: 论文ID
             top_k: 返回结果数量
-            
+
         Returns:
-            Tuple[str, Dict]: (结构化的检索结果, 最佳滚动定位信息)
+            Tuple[str, List[Dict]]: (结构化的检索结果, citations定位信息列表)
         """
         # 首先检查是否已完成加载
         if not self.is_ready():
             print("[WARNING] 向量库索引尚未加载完成，无法执行检索")
-            return "", None
+            return "", []
 
         # 获取该论文的向量库
         vector_store = None
@@ -298,15 +298,15 @@ class RagRetriever(QObject):
         
         if not vector_store:
             print(f"[WARNING] 未能获取论文 {paper_id} 的向量库")
-            return "", None
-            
+            return "", []
+
         try:
             # 加载rag_tree
             rag_tree = self.load_rag_tree(paper_id)
             if not rag_tree:
                 print(f"[WARNING] 未能加载论文 {paper_id} 的rag_tree")
-                return "", None
-                
+                return "", []
+
             # 移除重试机制，直接执行检索
             try:
                 # 执行检索
@@ -316,29 +316,29 @@ class RagRetriever(QObject):
                 )
             except Exception as e:
                 print(f"[ERROR] 检索失败: {str(e)}")
-                return "", None
+                return "", []
 
             # 过滤分数大于0.6的结果 - 保持原有检索逻辑
             filtered_docs = [(doc, score) for doc, score in docs_with_scores if score > 0.6]
 
             if not filtered_docs:
                 print(f"[INFO] 未找到相关分数大于0.6的内容，返回空结果")
-                return "", None  # 直接返回空字符串，而不是使用备选检索
-                
+                return "", []
+
             # 从metadata中提取路径并通过key_map查找对应内容
             section_paths = []
             # 保存第一个文档的分数（最高分）用于定位判断
             first_doc_score = filtered_docs[0][1] if filtered_docs else 0
-            
+
             for doc, score in filtered_docs:
                 if 'Header' in doc.metadata:
                     header_key = doc.metadata['Header']
                     if header_key in rag_tree.get('key_map', {}):
                         section_paths.append(rag_tree['key_map'][header_key])
-            
+
             if not section_paths:
                 print("[WARNING] 未找到对应的section路径")
-                return "", None  # 同样直接返回空字符串
+                return "", []
                 
             # 构建检索到的章节内容
             retrieved_sections = {}
@@ -352,32 +352,35 @@ class RagRetriever(QObject):
                     # 查找紧邻的公式块
                     self._add_adjacent_formulas(rag_tree, path, retrieved_sections)
             
-            # 初始化滚动信息为None
-            scroll_info = None
-            
-            # 只有当第一个检索结果分数大于0.65时才生成滚动信息
-            if first_doc_score > 0.65 and section_paths:
-                first_path = section_paths[0]
-                first_node = retrieved_sections.get(first_path)
-                if first_node:
-                    scroll_info = self._create_scroll_info(first_path, first_node, rag_tree)
-                    print(f"[INFO] 激活定位功能，分数: {first_doc_score:.4f}")
-            else:
-                print(f"[INFO] 不激活定位功能，首个结果分数: {first_doc_score:.4f}")
-                
             # 按照路径顺序排序
             sorted_paths = sorted(retrieved_sections.keys())
-            
-            # 构建最终结果字符串
+
+            # 为每个检索到的段落生成 citation 定位信息
+            citations = []
+            path_to_citation_idx = {}  # path -> citation index 映射
+
+            for path in sorted_paths:
+                node = retrieved_sections[path]
+                info = self._create_scroll_info(path, node, rag_tree)
+                info['path'] = path
+                info['label'] = self._build_section_title(rag_tree, path)
+                path_to_citation_idx[path] = len(citations)
+                citations.append(info)
+
+            if citations:
+                print(f"[INFO] 生成了 {len(citations)} 个引用定位信息")
+
+            # 构建最终结果字符串（带编号供LLM引用）
             result_parts = ["以下是论文中与您问题最相关的内容:"]
 
             for path in sorted_paths:
                 node = retrieved_sections[path]
                 # 构建完整的路径层次标题
                 section_title = self._build_section_title(rag_tree, path)
-                
-                result_parts.append(f"\n## {section_title}")
-                
+                citation_idx = path_to_citation_idx.get(path, '')
+
+                result_parts.append(f"\n## [段落{citation_idx}] {section_title}")
+
                 # 添加节点内容
                 if node.get('type') == 'text':
                     result_parts.append(node.get('translated_content', '') or node.get('content', ''))
@@ -399,11 +402,11 @@ class RagRetriever(QObject):
                 elif 'summary' in node:
                     result_parts.append(f"摘要: {node['summary']}")
 
-            return "\n\n".join(result_parts), scroll_info
-            
+            return "\n\n".join(result_parts), citations
+
         except Exception as e:
             print(f"[ERROR] 结构化检索失败: {str(e)}")
-            return "", None  # 发生异常也直接返回空字符串和None
+            return "", []  # 发生异常返回空列表
 
     def _create_scroll_info(self, path: str, node: Dict, rag_tree: Dict) -> Dict:
         """

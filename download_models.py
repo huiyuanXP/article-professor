@@ -16,11 +16,11 @@ def download_json(url):
 def download_and_modify_json(url, local_filename, modifications):
     if os.path.exists(local_filename):
         data = json.load(open(local_filename))
-        config_version = data.get('config_version', '0.0.0')
-        if config_version < '1.2.0':
-            data = download_json(url)
     else:
-        data = download_json(url)
+        try:
+            data = download_json(url)
+        except Exception:
+            data = {}
 
     # 修改内容
     for key, value in modifications.items():

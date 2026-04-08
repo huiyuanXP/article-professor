@@ -1,12 +1,14 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                           QTextEdit, QScrollArea, QLabel, QFrame, QComboBox)
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+                           QTextEdit, QScrollArea, QLabel, QFrame, QComboBox,
+                           QMenu)
 from PyQt6.QtCore import Qt, QTimer, QSize
-from PyQt6.QtGui import QIcon, QFont
+from PyQt6.QtGui import QIcon, QFont, QAction
 
 # 导入自定义组件和工具类
 from paths import get_asset_path
 from ui.message_bubble import MessageBubble, LoadingBubble
 from AI_manager import AIManager
+from AI_professor_chat import AIProfessorChat
 
 class ChatWidget(QWidget):
     """
@@ -28,6 +30,7 @@ class ChatWidget(QWidget):
         self.paper_controller = None  # 论文控制器引用
         self.loading_bubble = None  # 加载动画引用
         self.is_voice_active = False  # 语音功能是否激活
+        self.current_citations = []  # 当前请求的citations缓存
         
         # 初始化UI
         self.init_ui()
@@ -103,17 +106,115 @@ class ChatWidget(QWidget):
         # 标题栏布局
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(15, 0, 15, 0)
-        
+
         # 设置标题文本和字体
         title_font = QFont("Source Han Sans SC", 11, QFont.Weight.Bold)
         title_label = QLabel("你的导师")
         title_label.setFont(title_font)
         title_label.setStyleSheet("color: white; font-weight: bold;")
-        
+
         title_layout.addWidget(title_label)
-        
+        title_layout.addStretch()
+
+        # 导师风格切换按钮
+        self.style_button = QPushButton("切换风格")
+        self.style_button.setFixedHeight(26)
+        self.style_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.style_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.2);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.35);
+            }
+        """)
+        self.style_button.clicked.connect(self._show_style_menu)
+        title_layout.addWidget(self.style_button)
+
+        # 清空对话按钮
+        clear_button = QPushButton("清空对话")
+        clear_button.setFixedHeight(26)
+        clear_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.2);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.4);
+                border-radius: 4px;
+                padding: 2px 10px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 80, 80, 0.5);
+            }
+        """)
+        clear_button.clicked.connect(self._clear_conversation)
+        title_layout.addWidget(clear_button)
+
         return title_bar
-    
+
+    def _show_style_menu(self):
+        """显示导师风格选择菜单"""
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #FFFFFF;
+                border: 1px solid #CFD8DC;
+                border-radius: 4px;
+                padding: 4px 0;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                font-size: 13px;
+            }
+            QMenu::item:selected {
+                background-color: #E3F2FD;
+            }
+            QMenu::item:checked {
+                font-weight: bold;
+            }
+        """)
+
+        characters = AIProfessorChat.get_available_characters()
+        current = self.ai_controller.ai_chat.current_character if self.ai_controller else None
+
+        for char in characters:
+            action = QAction(char["label"], self)
+            action.setCheckable(True)
+            action.setChecked(char["name"] == current)
+            action.triggered.connect(lambda checked, name=char["name"], label=char["label"]: self._on_style_selected(name, label))
+            menu.addAction(action)
+
+        menu.exec(self.style_button.mapToGlobal(self.style_button.rect().bottomLeft()))
+
+    def _on_style_selected(self, character_name: str, label: str):
+        """切换导师风格"""
+        if self.ai_controller:
+            self.ai_controller.set_character(character_name)
+            self.style_button.setText(label)
+
+    def _clear_conversation(self):
+        """清空对话历史和界面消息"""
+        # 清空AI对话历史
+        if self.ai_controller:
+            self.ai_controller.clear_conversation()
+
+        # 清空界面上的所有消息气泡
+        while self.messages_layout.count():
+            item = self.messages_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        self.loading_bubble = None
+        self.current_citations = []
+        self.active_request_id = None
+
     def create_chat_container(self):
         """
         创建聊天内容容器
@@ -460,6 +561,9 @@ class ChatWidget(QWidget):
             self.messages_layout.addWidget(self.loading_bubble)
             self.scroll_to_bottom()
             
+            # 清理旧citations缓存
+            self.current_citations = []
+
             # 通过AI控制器获取AI响应，同时保存请求ID
             request_id = self.ai_controller.get_ai_response(message, paper_id, visible_content)
             self.active_request_id = request_id
@@ -482,27 +586,41 @@ class ChatWidget(QWidget):
         # 滚动到底部
         QTimer.singleShot(100, self.scroll_to_bottom)
 
-    def on_ai_sentence_ready(self, sentence, request_id):
+    def on_ai_sentence_ready(self, sentence, request_id, citations=None):
         """处理单句AI响应"""
         # 如果请求ID不匹配当前活动请求，忽略这句话
         if request_id != self.active_request_id:
             print(f"忽略过时请求的句子: '{sentence[:20]}...' (请求ID: {request_id})")
             return
-            
+
+        # 缓存citations（第一句会带上，后续为None）
+        if citations:
+            self.current_citations = citations
+
         # 如果有加载动画且这是第一个句子，移除加载动画
         if self.loading_bubble is not None:
             self.loading_bubble.stop_animation()
             self.messages_layout.removeWidget(self.loading_bubble)
             self.loading_bubble.deleteLater()
             self.loading_bubble = None
-        
-        # 显示单句回复
-        ai_bubble = MessageBubble(sentence, is_user=False)
+
+        # 显示单句回复，传入citations用于渲染citation pill
+        ai_bubble = MessageBubble(sentence, is_user=False, citations=self.current_citations)
+        # 连接citation点击信号
+        ai_bubble.citation_clicked.connect(self._on_citation_clicked)
         self.messages_layout.addWidget(ai_bubble)
-        
+
         # 滚动到底部
         QTimer.singleShot(100, self.scroll_to_bottom)
     
+    def _on_citation_clicked(self, citation_idx):
+        """处理citation pill点击，跳转到文章对应位置"""
+        if 0 <= citation_idx < len(self.current_citations):
+            citation = self.current_citations[citation_idx]
+            print(f"[Citation] 点击引用 [{citation_idx}]: {citation.get('label', '')}")
+            if self.ai_controller and hasattr(self.ai_controller, '_scroll_to_content'):
+                self.ai_controller._scroll_to_content(citation)
+
     def on_ai_response_ready(self, response):
         """
         当完整AI响应准备好时调用（仅用于非流式响应或流式响应结束）
@@ -529,9 +647,10 @@ class ChatWidget(QWidget):
             self.messages_layout.removeWidget(self.loading_bubble)
             self.loading_bubble.deleteLater()
             self.loading_bubble = None
-        
-        # 清除当前请求ID，因为请求已被取消
+
+        # 清除当前请求ID和citations缓存
         self.active_request_id = None
+        self.current_citations = []
     
     def scroll_to_bottom(self):
         """滚动到对话底部"""

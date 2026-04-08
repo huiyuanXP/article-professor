@@ -31,13 +31,12 @@ class ProcessingThread(QThread):
         self.is_running = False
         self.terminate()  # 强制终止线程
 
-# 修改 AIResponseThread 类以传递滚动信息
+# AI响应线程
 class AIResponseThread(QThread):
     """AI响应线程 - 处理AI响应生成，避免阻塞UI"""
-    
-    # 修改信号定义，添加滚动信息
+
     response_ready = pyqtSignal(str)
-    sentence_ready = pyqtSignal(str, str, object)  # (句子, 情绪, 滚动信息)
+    sentence_ready = pyqtSignal(str, str, object)  # (句子, 情绪, citations列表或None)
     
     def __init__(self, ai_chat):
         """初始化AI响应线程"""
@@ -60,15 +59,14 @@ class AIResponseThread(QThread):
             # 流式处理
             response = ""
             try:
-                # 修改这里，接收情绪参数
-                for sentence, emotion, scroll_info in self.ai_chat.process_query_stream(self.query, self.visible_content):
+                for sentence, emotion, citations in self.ai_chat.process_query_stream(self.query, self.visible_content):
                     # 检查线程是否被请求中断
                     if self.isInterruptionRequested():
                         print("AI响应生成被中断")
                         break
-                        
-                    # 发射句子信号，传递实际情绪
-                    self.sentence_ready.emit(sentence, emotion, scroll_info)
+
+                    # 发射句子信号，第一句附带citations列表，后续为None
+                    self.sentence_ready.emit(sentence, emotion, citations)
                     response += sentence
             except Exception as e:
                 print(f"AI响应生成失败: {str(e)}")

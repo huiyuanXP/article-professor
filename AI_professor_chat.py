@@ -4,7 +4,9 @@ import os
 from typing import List, Dict, Any, Generator, Tuple
 from config import LLMClient
 
-AI_CHARACTER_PROMPT_PATH = "prompt/ai_character_prompt_leidian.txt"
+AI_CHARACTER_PROMPT_DIR = "prompt"
+AI_CHARACTER_PROMPT_PREFIX = "ai_character_prompt_"
+DEFAULT_CHARACTER = "leidian"
 AI_EXPLAIN_PROMPT_PATH = "prompt/ai_explain_prompt.txt"
 AI_ROUTER_PROMPT_PATH = "prompt/ai_router_prompt.txt"
 
@@ -22,10 +24,13 @@ class AIProfessorChat:
     def __init__(self):
         """初始化AI对话助手"""
         self.logger = logging.getLogger(__name__)
-        
+
         # 设置基础路径
         self.base_path = os.path.dirname(os.path.abspath(__file__))
         self.output_path = os.path.join(self.base_path, "output")
+
+        # 当前角色风格
+        self.current_character = DEFAULT_CHARACTER
         
         # 对话历史 (保持最近10条)
         self.conversation_history = []
@@ -53,7 +58,53 @@ class AIProfessorChat:
         except Exception as e:
             self.logger.warning(f"读取文件 {filepath} 失败: {str(e)}")
             return ""
-    
+
+    def _get_character_prompt_path(self) -> str:
+        """获取当前角色风格的prompt文件路径"""
+        return os.path.join(AI_CHARACTER_PROMPT_DIR, f"{AI_CHARACTER_PROMPT_PREFIX}{self.current_character}.txt")
+
+    @staticmethod
+    def get_available_characters() -> List[Dict[str, str]]:
+        """获取所有可用的导师风格
+
+        Returns:
+            List[Dict[str, str]]: 包含 name(文件名标识) 和 label(显示名称) 的列表
+        """
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        prompt_dir = os.path.join(base_path, AI_CHARACTER_PROMPT_DIR)
+        characters = []
+        for filename in sorted(os.listdir(prompt_dir)):
+            if filename.startswith(AI_CHARACTER_PROMPT_PREFIX) and filename.endswith(".txt"):
+                name = filename[len(AI_CHARACTER_PROMPT_PREFIX):-4]
+                # 读取第一行作为显示名称
+                filepath = os.path.join(prompt_dir, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        first_line = f.readline().strip()
+                        # 提取"你是XXX"中的角色名
+                        if first_line.startswith("你是"):
+                            label = first_line[2:].split("，")[0].split("。")[0]
+                        else:
+                            label = name
+                except Exception:
+                    label = name
+                characters.append({"name": name, "label": label})
+        return characters
+
+    def set_character(self, character_name: str):
+        """切换导师风格
+
+        Args:
+            character_name: 角色标识名（如 leidian, keli）
+        """
+        self.current_character = character_name
+        self.logger.info(f"导师风格已切换为: {character_name}")
+
+    def clear_conversation(self):
+        """清空对话历史"""
+        self.conversation_history = []
+        self.logger.info("对话历史已清空")
+
     def set_paper_context(self, paper_id: str, paper_data: Dict[str, Any]) -> bool:
         """设置当前论文上下文
         
@@ -122,7 +173,7 @@ class AIProfessorChat:
             
             # 4. 根据策略执行不同的处理
             context_info = ""
-            scroll_info = None  # 初始化滚动信息
+            citations = []  # 初始化引用定位信息列表
             
             if function_name == 'direct_answer':
                 # 直接回答，不需要额外信息
@@ -143,7 +194,7 @@ class AIProfessorChat:
             elif function_name == 'rag_retrieval':
                 # RAG检索 - 获取相关段落
                 if self.current_paper_id:
-                    context_info, scroll_info = self._get_rag_context(optimized_query)  # 使用优化查询
+                    context_info, citations = self._get_rag_context(optimized_query)  # 使用优化查询
             
             else:
                 # 未知策略，使用直接回答
@@ -172,15 +223,15 @@ class AIProfessorChat:
             # 7. 收集完整响应以添加到历史记录
             full_response = ""
             
-            # 8. 流式返回结果，第一个句子附带滚动信息
+            # 8. 流式返回结果，第一个句子附带引用信息
             first_sentence = True
             for sentence in response_generator:
                 full_response += sentence
                 if first_sentence:
-                    yield sentence, emotion, scroll_info  # 添加情绪参数
+                    yield sentence, emotion, citations  # 第一句附带citations列表
                     first_sentence = False
                 else:
-                    yield sentence, emotion, None  # 添加情绪参数
+                    yield sentence, emotion, None  # 后续句子不重复传递
             
             # 9. 记录AI回答到对话历史
             self.conversation_history.append({"role": "assistant", "content": full_response})
@@ -401,38 +452,38 @@ class AIProfessorChat:
             self.logger.error(f"获取宏观上下文失败: {str(e)}")
             return ""
     
-    def _get_rag_context(self, query: str) -> Tuple[str, Dict]:
-        """从RAG检索器获取相关上下文和滚动定位信息"""
+    def _get_rag_context(self, query: str) -> Tuple[str, List[Dict]]:
+        """从RAG检索器获取相关上下文和引用定位信息列表"""
         try:
             if not self.current_paper_id or not query:
-                return "", None
-            
+                return "", []
+
             print(f"\n==== RAG检索查询 ====\n{query}")
-            
+
             # 添加检查 - 确保检索器存在且已加载完成
             if not self.retriever:
                 self.logger.warning("RAG检索器未初始化，无法执行检索")
-                return "", None
-                
+                return "", []
+
             # 检查检索器是否就绪
             if not self.retriever.is_ready():
                 self.logger.warning("RAG检索器尚未加载完成，无法执行检索")
-                return "", None
-                
-            # 使用RAG检索器获取结构化相关内容和滚动信息
-            context, scroll_info = self.retriever.retrieve_with_context(
+                return "", []
+
+            # 使用RAG检索器获取结构化相关内容和引用定位信息
+            context, citations = self.retriever.retrieve_with_context(
                 query=query,
                 paper_id=self.current_paper_id,
                 top_k=5
             )
-            
+
             print(f"\n==== RAG检索结果 ====\n{context}")
-            
-            return context, scroll_info
-                
+
+            return context, citations
+
         except Exception as e:
             self.logger.error(f"RAG检索失败: {str(e)}")
-            return "", None
+            return "", []
     
     def _prepare_final_messages(self, query: str, context_info: str, emotion: str, optimized_query: str = None, function_name: str = None) -> List[Dict[str, str]]:
         """准备最终发送给LLM的消息列表
@@ -450,7 +501,7 @@ class AIProfessorChat:
         messages = []
         
         # 读取角色提示词和解释提示词
-        character_prompt = self._read_file(AI_CHARACTER_PROMPT_PATH)
+        character_prompt = self._read_file(self._get_character_prompt_path())
         explain_prompt = self._read_file(AI_EXPLAIN_PROMPT_PATH)
         
         # 添加论文标题到系统提示(如果有)
@@ -483,8 +534,18 @@ class AIProfessorChat:
                 context_type = "论文概要"
             elif function_name == "rag_retrieval":
                 context_type = "相关论文段落"
-        
+
             final_query = f"{final_query}\n\n{context_type}:\n{context_info}"
+
+            # RAG检索时，注入引用格式硬性要求（独立于角色prompt，确保所有角色都遵守）
+            if function_name == "rag_retrieval":
+                final_query += (
+                    "\n\n【引用格式要求 - 必须遵守】"
+                    "\n当你的回答引用了上面的参考段落内容时，在对应文字后标注 *ref-[段落编号]。"
+                    "\n例如：注意力机制的核心是自注意力 *ref-[0]，而损失函数采用交叉熵 *ref-[2]"
+                    "\n编号对应上面 [段落N] 的编号（从0开始），每次只引用一个编号。"
+                    "\n积极添加引用标注，但只在确实引用了具体段落时添加。"
+                )
         
         final_query += f"{final_query}\n\n输出回复的话："
         # 添加最终用户查询

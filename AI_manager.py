@@ -24,7 +24,7 @@ class AIManager(QObject):
     voice_error = pyqtSignal(str)             # 语音错误信号
     voice_ready = pyqtSignal()                # 语音系统就绪信号
     voice_device_switched = pyqtSignal(bool)  # 语音设备切换状态信号
-    ai_sentence_ready = pyqtSignal(str, str)  # 单句AI回复准备好信号（内容, 请求ID）
+    ai_sentence_ready = pyqtSignal(str, str, object)  # 单句AI回复准备好信号（内容, 请求ID, citations列表或None）
     ai_generation_cancelled = pyqtSignal()    # AI生成被取消信号
     
     def __init__(self):
@@ -72,6 +72,14 @@ class AIManager(QObject):
         # 连接新的单句信号
         self.ai_response_thread.sentence_ready.connect(self._on_ai_sentence_ready)
     
+    def set_character(self, character_name: str):
+        """切换导师风格"""
+        self.ai_chat.set_character(character_name)
+
+    def clear_conversation(self):
+        """清空对话历史"""
+        self.ai_chat.clear_conversation()
+
     def init_voice_recognition(self, input_device_index=0):
         """初始化语音识别系统"""
         if self.voice_input is not None:
@@ -211,26 +219,26 @@ class AIManager(QObject):
         if not self.ai_response_thread.use_streaming:
             self._speak_response(response)
     
-    def _on_ai_sentence_ready(self, sentence, emotion, scroll_info=None):
+    def _on_ai_sentence_ready(self, sentence, emotion, citations=None):
         """处理单句AI响应就绪事件"""
         # 如果没有当前请求ID，可能是已经被取消，忽略这个句子
         if not self.current_request_id:
             return
-        
+
         # 缓存句子，并关联请求ID和情绪
         sentence_id = id(sentence)  # 使用对象id作为唯一标识
         self.pending_sentences[sentence_id] = (sentence, self.current_request_id, emotion)
-        
+
         # 累积响应
         self.accumulated_response += sentence
-        
-        # 删除此行，不在AI生成时触发显示
-        self.ai_sentence_ready.emit(sentence, self.current_request_id)
-        
-        # 处理滚动信息 - 如果有滚动信息且markdown_view被设置，则执行滚动
-        if scroll_info and hasattr(self, 'markdown_view') and self.markdown_view:
-            self._scroll_to_content(scroll_info)
-        
+
+        # 发出信号，附带citations（第一句有值，后续为None）
+        self.ai_sentence_ready.emit(sentence, self.current_request_id, citations)
+
+        # 自动滚动到第一个citation对应的位置（兼容旧行为）
+        if citations and hasattr(self, 'markdown_view') and self.markdown_view:
+            self._scroll_to_content(citations[0])
+
         # 使用TTS朗读单句 - 传递从AI生成的实际情绪
         self._speak_response(sentence, sentence_id, emotion)
 
@@ -270,12 +278,12 @@ class AIManager(QObject):
         if request_id != self.current_request_id:
             print(f"忽略过时的TTS音频播放：{text[:20]}... (请求ID: {request_id})")
             return
-            
+
         # 查找匹配的句子
         for sentence_id, (sentence, stored_request_id, _) in list(self.pending_sentences.items()):
             if sentence == text and stored_request_id == request_id:
-                # 发出显示此句子的信号，附带请求ID
-                self.ai_sentence_ready.emit(sentence, request_id)
+                # 发出显示此句子的信号，附带请求ID，TTS触发时不再传citations
+                self.ai_sentence_ready.emit(sentence, request_id, None)
                 # 从待处理列表中移除
                 self.pending_sentences.pop(sentence_id, None)
                 break

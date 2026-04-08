@@ -208,8 +208,11 @@ class APISettingsDialog(QDialog):
         self.edit_api_key = QLineEdit()
         self.edit_api_key.setPlaceholderText("sk-...")
         self.edit_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.edit_model = QLineEdit()
+        self.edit_model.setPlaceholderText("例如: deepseek-v3.2-exp")
         llm_layout.addRow("Base URL:", self.edit_base_url)
         llm_layout.addRow("API Key:", self.edit_api_key)
+        llm_layout.addRow("模型名称:", self.edit_model)
         llm_group.setLayout(llm_layout)
 
         # TTS API设置组
@@ -244,6 +247,7 @@ class APISettingsDialog(QDialog):
         settings = get_all_settings()
         self.edit_base_url.setText(settings.get("API_BASE_URL", ""))
         self.edit_api_key.setText(settings.get("API_KEY", ""))
+        self.edit_model.setText(settings.get("LLM_MODEL", "deepseek-v3.2-exp"))
         self.edit_tts_group_id.setText(settings.get("TTS_GROUP_ID", ""))
         self.edit_tts_api_key.setText(settings.get("TTS_API_KEY", ""))
 
@@ -251,6 +255,7 @@ class APISettingsDialog(QDialog):
         settings = {
             "API_BASE_URL": self.edit_base_url.text().strip(),
             "API_KEY": self.edit_api_key.text().strip(),
+            "LLM_MODEL": self.edit_model.text().strip() or "deepseek-v3.2-exp",
             "TTS_GROUP_ID": self.edit_tts_group_id.text().strip(),
             "TTS_API_KEY": self.edit_tts_api_key.text().strip(),
         }

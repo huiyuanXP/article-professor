@@ -13,6 +13,7 @@ _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_set
 _DEFAULT_SETTINGS = {
     "API_BASE_URL": "",
     "API_KEY": "",
+    "LLM_MODEL": "deepseek-v3.2-exp",
     "TTS_GROUP_ID": "",
     "TTS_API_KEY": "",
 }
@@ -124,7 +125,7 @@ class LLMClient:
 
         try:
             response = self.client.chat.completions.create(
-                model="deepseek-v3-250324",
+                model=get_setting("LLM_MODEL") or "deepseek-v3.2-exp",
                 messages=messages,
                 temperature=temperature,
                 stream=stream
@@ -133,6 +134,8 @@ class LLMClient:
             if stream:
                 full_response = ""
                 for chunk in response:
+                    if not chunk.choices:
+                        continue
                     if chunk.choices[0].delta.content is not None:
                         content = chunk.choices[0].delta.content
                         print(content, end='', flush=True)
@@ -165,7 +168,7 @@ class LLMClient:
 
         try:
             response = self.client.chat.completions.create(
-                model="deepseek-v3-250324",
+                model=get_setting("LLM_MODEL") or "deepseek-v3.2-exp",
                 messages=messages,
                 temperature=temperature,
                 stream=True
@@ -180,6 +183,8 @@ class LLMClient:
             en_end_marks = '.!?;'
             
             for chunk in response:
+                if not chunk.choices:
+                    continue
                 if chunk.choices[0].delta.content is not None:
                     content = chunk.choices[0].delta.content
                     current_sentence += content
