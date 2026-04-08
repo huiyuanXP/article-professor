@@ -1,7 +1,10 @@
-from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QPushButton, 
-                           QMenu, QLabel)
+from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QPushButton,
+                           QMenu, QLabel, QDialog, QVBoxLayout,
+                           QFormLayout, QLineEdit, QDialogButtonBox,
+                           QMessageBox, QGroupBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QAction
+from config import get_all_settings, save_all_settings
 
 class SettingsBar(QWidget):
     """设置栏组件 - 处理所有设置相关的功能"""
@@ -48,7 +51,15 @@ class SettingsBar(QWidget):
         self.md_processor_action.setChecked(False)  # 默认使用普通处理器
         self.md_processor_action.triggered.connect(self._on_md_processor_toggle)
         settings_menu.addAction(self.md_processor_action)
-        
+
+        # 添加分隔线
+        settings_menu.addSeparator()
+
+        # 添加API设置选项
+        api_settings_action = QAction("API设置...", settings_menu)
+        api_settings_action.triggered.connect(self._open_api_settings)
+        settings_menu.addAction(api_settings_action)
+
         # 将菜单关联到按钮
         settings_button.clicked.connect(
             lambda: settings_menu.exec(settings_button.mapToGlobal(settings_button.rect().bottomLeft()))
@@ -168,4 +179,81 @@ class SettingsBar(QWidget):
             self.md_processor_action.setText("正在使用任意格式处理器 点击切换为原生")
         else:
             self.md_processor_action.setText("正在使用论文格式处理器(原生) 点击切换为任意格式")
-        self.md_processor_action.setChecked(is_slides_processor) 
+        self.md_processor_action.setChecked(is_slides_processor)
+
+    def _open_api_settings(self):
+        """打开API设置对话框"""
+        dialog = APISettingsDialog(self.window())
+        dialog.exec()
+
+
+class APISettingsDialog(QDialog):
+    """API设置对话框"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("API设置")
+        self.setMinimumWidth(500)
+        self._init_ui()
+        self._load_current_settings()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # LLM API设置组
+        llm_group = QGroupBox("LLM API 设置")
+        llm_layout = QFormLayout()
+        self.edit_base_url = QLineEdit()
+        self.edit_base_url.setPlaceholderText("例如: https://api.openai.com/v1")
+        self.edit_api_key = QLineEdit()
+        self.edit_api_key.setPlaceholderText("sk-...")
+        self.edit_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        llm_layout.addRow("Base URL:", self.edit_base_url)
+        llm_layout.addRow("API Key:", self.edit_api_key)
+        llm_group.setLayout(llm_layout)
+
+        # TTS API设置组
+        tts_group = QGroupBox("TTS (MiniMax) 设置")
+        tts_layout = QFormLayout()
+        self.edit_tts_group_id = QLineEdit()
+        self.edit_tts_group_id.setPlaceholderText("MiniMax Group ID")
+        self.edit_tts_api_key = QLineEdit()
+        self.edit_tts_api_key.setPlaceholderText("MiniMax API Key")
+        self.edit_tts_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        tts_layout.addRow("Group ID:", self.edit_tts_group_id)
+        tts_layout.addRow("API Key:", self.edit_tts_api_key)
+        tts_group.setLayout(tts_layout)
+
+        # 提示信息
+        hint = QLabel("提示: 留空的项目对应功能将不可用，但应用仍可启动。")
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+
+        # 按钮
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+
+        layout.addWidget(llm_group)
+        layout.addWidget(tts_group)
+        layout.addWidget(hint)
+        layout.addWidget(buttons)
+
+    def _load_current_settings(self):
+        settings = get_all_settings()
+        self.edit_base_url.setText(settings.get("API_BASE_URL", ""))
+        self.edit_api_key.setText(settings.get("API_KEY", ""))
+        self.edit_tts_group_id.setText(settings.get("TTS_GROUP_ID", ""))
+        self.edit_tts_api_key.setText(settings.get("TTS_API_KEY", ""))
+
+    def _save(self):
+        settings = {
+            "API_BASE_URL": self.edit_base_url.text().strip(),
+            "API_KEY": self.edit_api_key.text().strip(),
+            "TTS_GROUP_ID": self.edit_tts_group_id.text().strip(),
+            "TTS_API_KEY": self.edit_tts_api_key.text().strip(),
+        }
+        save_all_settings(settings)
+        QMessageBox.information(self, "保存成功", "API设置已保存，LLM配置将在下次调用时生效。")
+        self.accept()

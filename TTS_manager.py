@@ -3,10 +3,7 @@ import queue
 import pyaudio
 import requests
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, QMutex, QTimer
-from config import TTS_GROUP_ID, TTS_API_KEY
-
-url = "https://api.minimax.chat/v1/t2a_v2?GroupId=" + TTS_GROUP_ID
-headers = {"Content-Type": "application/json", "Authorization": "Bearer " + TTS_API_KEY}
+from config import get_setting
 
 class TTSThread(QThread):
     """TTS播放线程，负责播放音频数据"""
@@ -174,9 +171,13 @@ class TTSManager(QObject):
         headers = {
             'accept': 'application/json, text/plain, */*',
             'content-type': 'application/json',
-            'authorization': "Bearer " + TTS_API_KEY,
+            'authorization': "Bearer " + get_setting("TTS_API_KEY"),
         }
         return headers
+
+    def build_tts_url(self) -> str:
+        """构建TTS请求URL"""
+        return "https://api.minimax.chat/v1/t2a_v2?GroupId=" + get_setting("TTS_GROUP_ID")
 
     def build_tts_stream_body(self, text: str, emotion: str = "neutral") -> dict:
         """构建请求体"""
@@ -272,7 +273,7 @@ class TTSManager(QObject):
         tts_body = self.build_tts_stream_body(text, emotion)  # 传递情绪参数
         
         try:
-            response = requests.request("POST", url, stream=True, headers=tts_headers, data=tts_body)
+            response = requests.request("POST", self.build_tts_url(), stream=True, headers=tts_headers, data=tts_body)
             
             # 即时处理所有音频块
             audio_chunks = []

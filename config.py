@@ -1,15 +1,52 @@
 import logging
 import sys
+import json
+import os
 from typing import Optional, List, Dict, Any, Generator
 from openai import OpenAI
 from langchain_huggingface import HuggingFaceEmbeddings
 
-# API配置
-API_BASE_URL = "YOUR_API_URL"
-API_KEY = "YOUR_API_KEY"
+# 配置文件路径
+_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_settings.json")
 
-TTS_GROUP_ID = "YOUR_MINIMAX_GROUP_ID"
-TTS_API_KEY = "YOUR_MINIMAX_API_KEY"
+# 默认值（空字符串，允许应用在未配置时启动）
+_DEFAULT_SETTINGS = {
+    "API_BASE_URL": "",
+    "API_KEY": "",
+    "TTS_GROUP_ID": "",
+    "TTS_API_KEY": "",
+}
+
+def _load_settings() -> dict:
+    """从配置文件加载设置"""
+    if os.path.exists(_CONFIG_FILE):
+        try:
+            with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return {**_DEFAULT_SETTINGS, **json.load(f)}
+        except Exception:
+            pass
+    return dict(_DEFAULT_SETTINGS)
+
+def _save_settings(settings: dict):
+    """保存设置到配置文件"""
+    with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+def get_setting(key: str) -> str:
+    """获取单个设置值"""
+    return _load_settings().get(key, "")
+
+def get_all_settings() -> dict:
+    """获取所有API相关设置"""
+    return _load_settings()
+
+def save_all_settings(settings: dict):
+    """保存所有API相关设置并更新运行时状态"""
+    current = _load_settings()
+    current.update(settings)
+    _save_settings(current)
+    # 重置LLMClient单例以便使用新配置
+    LLMClient.reset_instance()
 
 # 嵌入模型配置
 EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
@@ -46,14 +83,25 @@ class LLMClient:
             cls._instance._initialized = False
         return cls._instance
     
+    @classmethod
+    def reset_instance(cls):
+        """重置单例，下次获取时将使用新配置"""
+        cls._instance = None
+
     def __init__(self, api_key=None, base_url=None):
         """初始化LLM客户端"""
         if self._initialized:
             return
-            
-        self.api_key = api_key or API_KEY
-        self.base_url = base_url or API_BASE_URL
-        
+
+        settings = _load_settings()
+        self.api_key = api_key or settings.get("API_KEY", "")
+        self.base_url = base_url or settings.get("API_BASE_URL", "")
+
+        if not self.api_key or not self.base_url:
+            self.client = None
+            self._initialized = True
+            return
+
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url
@@ -71,6 +119,9 @@ class LLMClient:
         Returns:
             str: LLM响应内容
         """
+        if not self.client:
+            raise RuntimeError("LLM API未配置，请在设置中配置API Key和Base URL")
+
         try:
             response = self.client.chat.completions.create(
                 model="deepseek-v3-250324",
@@ -78,7 +129,7 @@ class LLMClient:
                 temperature=temperature,
                 stream=stream
             )
-            
+
             if stream:
                 full_response = ""
                 for chunk in response:
@@ -108,6 +159,10 @@ class LLMClient:
         Returns:
             str: 完整响应
         """
+        if not self.client:
+            yield "LLM API未配置，请在设置中配置API Key和Base URL"
+            return "LLM API未配置"
+
         try:
             response = self.client.chat.completions.create(
                 model="deepseek-v3-250324",
@@ -115,7 +170,7 @@ class LLMClient:
                 temperature=temperature,
                 stream=True
             )
-            
+
             full_response = ""
             current_sentence = ""
             

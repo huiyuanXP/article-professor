@@ -1,3 +1,4 @@
+import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QPushButton, QSplitter, QLabel, QFrame)
 from PyQt6.QtCore import Qt
